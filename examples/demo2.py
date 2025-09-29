@@ -1,3 +1,7 @@
+"""
+Obtain and print configuration options of the Kod service.
+"""
+
 from kod_link_dify.kod import get_options
 
 if __name__ == "__main__":

@@ -1,13 +1,15 @@
 import requests
+
 from .auth import get_token
 from .config import base_url, request_timeout
+
 
 def get_options(token: str | None = None, timeout: int = request_timeout) -> dict:
     """
     获取系统配置信息
     token: 可道云的 accessToken，默认为 None（自动获取）
     timeout: 请求超时时间，默认使用配置中的 request_timeout
-    
+
     返回值：字典，包含配置信息
     """
     if token is None:

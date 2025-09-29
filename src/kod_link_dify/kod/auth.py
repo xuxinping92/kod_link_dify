@@ -1,5 +1,7 @@
 import requests
-from .config import base_url, username, password, request_timeout
+
+from .config import base_url, password, request_timeout, username
+
 
 def get_token(
     user: str = username,
@@ -9,7 +11,7 @@ def get_token(
 ) -> str:
     """
     登录并返回 token
-    
+
     user: 用户名
     pwd: 密码
     base: 可道云的基础 URL（不要以 / 结尾）

@@ -7,17 +7,37 @@ name = "kod-link-dify"
 version = "0.1.0"
 description = "Python client for linking Kod and Dify API"
 readme = "README.md"
-license = {text = "MIT"}
-authors = [
-    {name = "Xu Xinping", email = "xinping_xu@qq.com"},
-]
-dependencies = [
-    "requests>=2.25",
-    "pytest>=6.2",
-]
+license = { text = "MIT" }
+authors = [{ name = "Xu Xinping", email = "xinping_xu@qq.com" }]
+dependencies = ["requests>=2.25", "pytest>=6.2"]
 
 [tool.setuptools]
-package-dir = {"" = "src"}
+package-dir = { "" = "src" }
 
 [tool.setuptools.packages.find]
 where = ["src"]
+
+# ----------------------------
+# Code style tools
+# ----------------------------
+
+[tool.black]
+line-length = 100
+target-version = ["py39"]
+skip-string-normalization = true
+exclude = '''
+/(
+    \.git
+  | \.mypy_cache
+  | \.pytest_cache
+  | \.venv
+  | build
+  | dist
+)/
+'''
+
+[tool.isort]
+profile = "black"
+line_length = 100
+skip_gitignore = true
+known_first_party = ["kod_link_dify"]
