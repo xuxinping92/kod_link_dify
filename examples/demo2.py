@@ -2,8 +2,10 @@
 Obtain and print configuration options of the Kod service.
 """
 
-from kod_link_dify.kod import get_options
+from kod_link_dify import KodClient
 
 if __name__ == "__main__":
-    options = get_options()
-    print("Options:", options)
+    kod_client = KodClient()
+    kod_client.login()
+    options = kod_client.get_options()
+    print("Kod Options:", options)

@@ -1,9 +1,7 @@
 from . import config
-from .api import get_client, list_datasets, list_documents
+from .api import DifyClient
 
 __all__ = [
     "config",
-    "get_client",
-    "list_datasets",
-    "list_documents",
+    "DifyClient",
 ]
