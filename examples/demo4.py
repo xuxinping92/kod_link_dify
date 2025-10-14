@@ -1,15 +1,10 @@
+"""
+Obtain document permission list from Kod and print it.
+"""
+
 from kod_link_dify.kod.api import KodClient
 
-if __name__ == "__main__":
-    kod = KodClient()
-    kod.login()
-
-    # 1. 列出根目录
-    items = kod.list_dir("io_/")
-    for item in items:
-        print(f"{item['type']}: {item['name']}  ->  {item['path']}")
-
-    # 2. 获取某个文件的信息
-    file_path = "io_/home/xxu/test/test1.txt"
-    info = kod.get_file_info(file_path)
-    print("文件信息：", info)
+client = KodClient()
+client.login()
+perm_data = client.get_doc_permission_list()
+print("文档权限列表:", perm_data)  # 拿到角色与权限配置，可直接用于表格展示或本地缓存
