@@ -1,6 +1,6 @@
 import os
 from pathlib import Path
-from typing import Optional, Union
+from typing import List, Optional, Union
 from urllib.parse import unquote, urlencode
 
 import requests
@@ -14,12 +14,14 @@ class KodClient:
         base_url: str = base_url,
         username: str = username,
         password: str = password,
+        timeout: int = request_timeout,
     ):
         self.base: str = base_url.rstrip("/")
         self.username: str = username
         self.password: str = password
         self.session = requests.Session()
-        self.token: str | None = None  # accessToken
+        self.timeout: int = timeout
+        self.token: str = ""  # 登录后填充
 
     def login(self) -> str:
         """
@@ -40,7 +42,7 @@ class KodClient:
     def get_options(
         self,
         token: str | None = None,
-        timeout: int = request_timeout,
+        timeout: int = None,
     ) -> dict:
         """
         获取系统配置信息
@@ -53,7 +55,8 @@ class KodClient:
             if self.token is None:
                 raise ValueError("请先调用 login() 登录获取 token")
             token = self.token  # 自动获取
-
+        if timeout is None:
+            timeout = self.timeout
         url = f"{self.base}/index.php?user/view/options&accessToken={token}"
         resp = self.session.get(url, timeout=timeout)
         resp.raise_for_status()
@@ -113,77 +116,38 @@ class KodClient:
         else:
             raise RuntimeError(f"获取文档权限列表失败：{j}")
 
-    def download_file(
+    def _download_one(
         self,
-        path: str,
-        save_to: Optional[Union[str, os.PathLike]] = None,
+        one_path: str,
+        save_to: Optional[Path],
         overwrite: bool = False,
         chunk_size: int = 1024 * 1024,
-        timeout: int = request_timeout,
+        timeout: Optional[int] = None,
         extra_params: Optional[dict] = None,
     ) -> Path:
-        """
-        从 Kod 下载文件到本地。
-
-        Parameters
-        ----------
-        path : str
-            Kod 的 path 参数，例如 "{source:1031}/" 或者 "分享/项目A/报告.pdf" 等。
-            按接口要求原样传入（无需手动 urlencode）。
-        save_to : str | Path | None
-            保存位置。如果是目录，则用远端文件名保存到该目录；
-            如果是文件路径，则直接保存到该文件；
-            如果为 None，默认保存到当前工作目录下，文件名来自响应头或 path 推断。
-        overwrite : bool
-            目标文件已存在时是否覆盖。
-        chunk_size : int
-            流式下载的块大小（字节）。
-        timeout : int | None
-            请求超时；默认使用 client 初始化时的 timeout。
-        extra_params : dict | None
-            额外 query 参数，通常不需要。
-
-        Returns
-        -------
-        pathlib.Path
-            实际保存的本地文件路径。
-
-        Raises
-        ------
-        requests.HTTPError
-            当 HTTP 状态码非 2xx。
-        FileExistsError
-            当目标文件已存在且 overwrite=False。
-        RuntimeError
-            当无法确定保存文件名时。
-        """
-        # 组合为 "?explorer/index/fileOut&path=...&download=1"
-        query = {"path": path, "download": 1}
+        """下载单个文件"""
+        query = {"path": one_path, "download": 1}
         if extra_params:
             query.update(extra_params)
 
-        # 手动拼装，确保与 Kod 的“动作式”路径保持一致
-        # 最终效果: http://host/index.php?explorer/index/fileOut&path=...&download=1
+        # 拼接 Kod 动作式 URL
         query_string = "?" + "&".join(
             ["explorer/index/fileOut"] + [urlencode({k: v}) for k, v in query.items()]
         )
         full_url = f"{self.base}/index.php{query_string}"
+        _timeout = self.timeout if timeout is None else timeout
 
-        # 发起流式下载
-        resp = self.session.get(full_url, stream=True, timeout=timeout)
+        # 发起流式请求
+        resp = self.session.get(full_url, stream=True, timeout=_timeout)
         resp.raise_for_status()
 
-        # 从 Content-Disposition 中解析文件名
+        # 解析文件名
         filename = None
         cd = resp.headers.get("Content-Disposition") or resp.headers.get("content-disposition")
         if cd:
-            # 兼容 filename* 与 filename
-            # 例: attachment; filename="报告.pdf"
-            # 或: attachment; filename*=UTF-8''%E6%8A%A5%E5%91%8A.pdf
             parts = [p.strip() for p in cd.split(";")]
             for p in parts:
                 if p.lower().startswith("filename*="):
-                    # RFC 5987: filename*=UTF-8''urlencoded
                     try:
                         enc_and_name = p.split("=", 1)[1]
                         _, _, enc_name = enc_and_name.partition("''")
@@ -195,33 +159,26 @@ class KodClient:
                     val = p.split("=", 1)[1].strip().strip('"')
                     filename = unquote(val)
 
-        # 兜底：若无法从响应头得到文件名，尝试从 path 推断
         if not filename:
-            # 去掉末尾的 '/'，取最后一段
-            guess = path.rstrip("/").split("/")[-1]
-            # 如果是像 {source:1031} 这种占位，给个通用名
+            guess = one_path.rstrip("/").split("/")[-1]
             if guess.startswith("{") and guess.endswith("}"):
                 guess = "download.bin"
             filename = guess or "download.bin"
 
-        # 计算最终保存路径
+        # 确定保存路径
         if save_to is None:
             target = Path.cwd() / filename
         else:
-            save_to = Path(save_to)
             if save_to.exists() and save_to.is_dir():
                 target = save_to / filename
-            elif save_to.suffix:  # 显式文件路径
+            elif save_to.suffix:
                 target = save_to
             else:
-                # 目标目录（不存在则创建）
                 save_to.mkdir(parents=True, exist_ok=True)
                 target = save_to / filename
 
         if target.exists() and not overwrite:
-            raise FileExistsError(
-                f"Target file exists: {target}. Set overwrite=True to replace it."
-            )
+            raise FileExistsError(f"Target file exists: {target}")
 
         # 写入文件
         with open(target, "wb") as f:
@@ -230,3 +187,43 @@ class KodClient:
                     f.write(chunk)
 
         return target
+
+    def download_file(
+        self,
+        path: Union[str, List[str]],
+        save_to: Optional[Union[str, os.PathLike]] = None,
+        overwrite: bool = False,
+        chunk_size: int = 1024 * 1024,
+        timeout: Optional[int] = None,
+        extra_params: Optional[dict] = None,
+    ) -> Union[Path, List[Path]]:
+        """
+        从 Kod 下载单个或多个文件。
+        - 传入单个 path: 返回 Path
+        - 传入多个 path: 返回 list[Path]
+        """
+        save_to_path = Path(save_to) if save_to else None
+
+        # 单个文件
+        if isinstance(path, str):
+            return self._download_one(
+                path, save_to_path, overwrite, chunk_size, timeout, extra_params
+            )
+
+        # 批量下载
+        if not isinstance(path, (list, tuple)):
+            raise TypeError("path must be str or list[str]")
+
+        if save_to_path and save_to_path.suffix:
+            raise ValueError("When downloading multiple paths, 'save_to' must be a directory")
+
+        base_dir = save_to_path or Path.cwd()
+        base_dir.mkdir(parents=True, exist_ok=True)
+
+        results = []
+        for p in path:
+            results.append(
+                self._download_one(p, base_dir, overwrite, chunk_size, timeout, extra_params)
+            )
+
+        return results

@@ -15,7 +15,7 @@ desktop = Path.home() / "Desktop"
 
 # 1) 通过 {source:ID} 下载（接口示例）
 local_path = client.download_file(
-    path="{source:3543}/",
+    path=["{source:3543}/", "{source:3544}/"],
     save_to=desktop,
     overwrite=True,
 )

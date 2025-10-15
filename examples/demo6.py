@@ -26,8 +26,8 @@ process_rule = {
 }
 result = client.upload_document_file(
     dataset_id='f6f44282-a4da-409c-8cfe-05edba8e351a',
-    file_path=r"C:\Users\22959\Desktop\testfile.docx",
-    name="testfile.docx",
+    file_path=r"C:\Users\22959\Desktop\test_files\测试文档.docx",
+    name="测试文档.docx",
     indexing_technique="high_quality",
     process_rule=process_rule,
 )

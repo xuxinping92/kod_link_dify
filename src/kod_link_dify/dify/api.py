@@ -1,6 +1,6 @@
 import json
 import os
-from typing import Any, Dict, Optional
+from typing import Any, Dict, List, Optional, Tuple
 
 import requests
 
@@ -82,31 +82,190 @@ class DifyClient:
 
         url = f"{self.base}/v1/datasets/{dataset_id}/document/create-by-file"
 
-        # 默认文档名
         if name is None:
             name = os.path.basename(file_path)
 
-        # 构造 data 字段（JSON 字符串），包装必要字段
         payload = {
             "name": name,
             "indexing_technique": indexing_technique,
         }
         if process_rule is not None:
             payload["process_rule"] = process_rule
+        payload.update(kwargs)
 
-        # 若有其他自定义参数（如 mode 等），插入
-        for k, v in kwargs.items():
-            payload[k] = v
-
-        # multipart/form-data 请求：一个 part 是 data（JSON 字符串），一个 part 是 file
-        # 根据文档 “body: multipart/form-data” 要求 :contentReference[oaicite:2]{index=2}
-        files = {
-            # “data” 部分要传 JSON 文本
-            "data": (None, json.dumps(payload), "application/json"),
-            # “file” 部分要传实际文件内容
-            "file": (name, open(file_path, "rb"), "application/octet-stream"),
-        }
-
-        resp = self.session.post(url, files=files, timeout=self.timeout)
+        with open(file_path, "rb") as f:
+            files = {
+                "data": (None, json.dumps(payload), "application/json"),
+                "file": (name, f, "application/octet-stream"),
+            }
+            resp = self.session.post(url, files=files, timeout=self.timeout)
         resp.raise_for_status()
         return resp.json()
+
+    # ---------- Internal helpers ----------
+
+    @staticmethod
+    def _is_hidden_path(p: str) -> bool:
+        name = os.path.basename(p)
+        if name.startswith("."):
+            return True
+        lower = name.lower()
+        # 常见系统文件
+        return lower in {"thumbs.db", "desktop.ini", "icon\r"}
+
+    def _collect_candidates(
+        self,
+        folder_path: str,
+        *,
+        recursive: bool,
+        allowed_ext: Optional[List[str]],
+        ignore_hidden: bool,
+        name_from: str,  # "basename" | "relative"
+    ) -> List[Tuple[str, str]]:
+        """返回 [(file_path, doc_name), ...]"""
+        folder_abs = os.path.abspath(os.path.expanduser(folder_path))
+        if not os.path.isdir(folder_abs):
+            raise NotADirectoryError(f"Not a directory: {folder_abs}")
+
+        exts = None
+        if allowed_ext is not None:
+            exts = {e.lower() if e.startswith(".") else f".{e.lower()}" for e in allowed_ext}
+
+        items: List[Tuple[str, str]] = []
+
+        if recursive:
+            for root, dirs, files in os.walk(folder_abs):
+                if ignore_hidden:
+                    dirs[:] = [d for d in dirs if not self._is_hidden_path(os.path.join(root, d))]
+                for fn in files:
+                    fp = os.path.join(root, fn)
+                    if ignore_hidden and self._is_hidden_path(fp):
+                        continue
+                    if exts is not None and os.path.splitext(fn)[1].lower() not in exts:
+                        continue
+                    if not os.path.isfile(fp):
+                        continue
+                    if name_from == "relative":
+                        doc_name = os.path.relpath(fp, start=folder_abs).replace("\\", "/")
+                    else:
+                        doc_name = os.path.basename(fp)
+                    items.append((fp, doc_name))
+        else:
+            for fn in os.listdir(folder_abs):
+                fp = os.path.join(folder_abs, fn)
+                if not os.path.isfile(fp):
+                    continue
+                if ignore_hidden and self._is_hidden_path(fp):
+                    continue
+                if exts is not None and os.path.splitext(fn)[1].lower() not in exts:
+                    continue
+                if name_from == "relative":
+                    doc_name = os.path.relpath(fp, start=folder_abs).replace("\\", "/")
+                else:
+                    doc_name = os.path.basename(fp)
+                items.append((fp, doc_name))
+
+        return items
+
+    # ---------- 1) 预览 ----------
+
+    def preview_folder(
+        self,
+        folder_path: str,
+        *,
+        recursive: bool = True,
+        allowed_ext: Optional[List[str]] = None,
+        ignore_hidden: bool = True,
+        name_from: str = "basename",  # "basename" | "relative"
+    ) -> List[Dict[str, str]]:
+        """
+        预览：只返回待上传文件清单，不执行上传。
+        返回：[{ "file": <绝对路径>, "name": <将用于Dify的文档名> }, ...]
+        """
+        items = self._collect_candidates(
+            folder_path=folder_path,
+            recursive=recursive,
+            allowed_ext=allowed_ext,
+            ignore_hidden=ignore_hidden,
+            name_from=name_from,
+        )
+        return [{"file": fp, "name": name} for fp, name in items]
+
+    # ---------- 2) 上传 ----------
+
+    def upload_folder(
+        self,
+        dataset_id: str,
+        folder_path: Optional[str] = None,
+        *,
+        # 方案 A：直接传 folder_path，用与 preview 相同的筛选参数再次扫描
+        recursive: bool = True,
+        allowed_ext: Optional[List[str]] = None,
+        ignore_hidden: bool = True,
+        name_from: str = "basename",
+        # 方案 B：若你已经 preview 过，可把结果直接传进来避免二次扫描
+        items: Optional[List[Dict[str, str]]] = None,  # 形如 [{"file": "...", "name": "..."}]
+        indexing_technique: str = "high_quality",
+        process_rule: Optional[Dict[str, Any]] = None,
+        on_error: str = "continue",  # "continue" | "raise"
+        **kwargs,
+    ) -> List[Dict[str, Any]]:
+        """
+        上传：将预览的文件真正上传到 Dify 知识库。
+        返回每个文件的处理结果：
+        {
+            "file": <本地绝对路径>,
+            "status": "ok" | "error",
+            "name": <文档名>,
+            "reason": <失败原因或空>,
+            "response": <成功时的API返回>
+        }
+        """
+        if items is None:
+            if not folder_path:
+                raise ValueError("Either provide folder_path to scan or pass precomputed 'items'.")
+            items = self.preview_folder(
+                folder_path,
+                recursive=recursive,
+                allowed_ext=allowed_ext,
+                ignore_hidden=ignore_hidden,
+                name_from=name_from,
+            )
+
+        results: List[Dict[str, Any]] = []
+
+        for it in items:
+            fp = it["file"]
+            doc_name = it["name"]
+            try:
+                resp = self.upload_document_file(
+                    dataset_id=dataset_id,
+                    file_path=fp,
+                    name=doc_name,
+                    indexing_technique=indexing_technique,
+                    process_rule=process_rule,
+                    **kwargs,
+                )
+                results.append(
+                    {
+                        "file": fp,
+                        "status": "ok",
+                        "name": doc_name,
+                        "reason": "",
+                        "response": resp,
+                    }
+                )
+            except Exception as e:
+                if on_error == "raise":
+                    raise
+                results.append(
+                    {
+                        "file": fp,
+                        "status": "error",
+                        "name": doc_name,
+                        "reason": str(e),
+                        "response": None,
+                    }
+                )
+
+        return results
