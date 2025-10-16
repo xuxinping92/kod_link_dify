@@ -1,8 +1,19 @@
 from kod_link_dify import DifyClient, KodClient, sync_kod_file_to_dify
+from kod_link_dify.dify.config import api_key
+from kod_link_dify.dify.config import base_url as dify_url
+from kod_link_dify.kod.config import base_url as kod_url
+from kod_link_dify.kod.config import password, username
 
-kod = KodClient()
+kod = KodClient(
+    base_url=kod_url,
+    username=username,
+    password=password,
+)
 kod.login()
-dify = DifyClient()
+dify = DifyClient(
+    base_url=dify_url,
+    api_key=api_key,
+)
 
 kod_paths = ["{source:3543}/", "{source:3544}/"]
 dataset_id = "f6f44282-a4da-409c-8cfe-05edba8e351a"
@@ -34,7 +45,6 @@ process_rule = {
         ],
     },
 }
-
 
 result = sync_kod_file_to_dify(
     kod_client=kod,
