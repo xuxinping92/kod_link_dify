@@ -2,21 +2,16 @@
 Obtain document from Kod and save it to local desktop.
 """
 
-from pathlib import Path
-
 from kod_link_dify.kod.api import KodClient
 
 # 示例：下载文件到桌面
 client = KodClient()
 client.login()
 
-# 获取 Windows 桌面路径
-desktop = Path.home() / "Desktop"
-
 # 1) 通过 {source:ID} 下载（接口示例）
 local_path = client.download_file(
     path=["{source:3543}/", "{source:3544}/"],
-    save_to=desktop,
+    save_to=r"C:\Users\22959\Desktop\test_files",
     overwrite=True,
 )
 print("saved to:", local_path)
