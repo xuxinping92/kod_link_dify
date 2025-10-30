@@ -1,4 +1,5 @@
 import os
+import urllib.parse
 from pathlib import Path
 from typing import List, Optional, Union
 from urllib.parse import unquote, urlencode
@@ -227,3 +228,88 @@ class KodClient:
             )
 
         return results
+
+    def download_folder_files(
+        self,
+        folder_path: str,
+        save_to: Union[str, Path],
+        overwrite: bool = False,
+        chunk_size: int = 1024 * 1024,
+        timeout: Optional[int] = None,
+    ) -> List[Path]:
+        """
+        简单版：
+        - 不递归
+        - 默认登录已经拿到了 self.token
+        - 列目录、下载都同时带上多种 token 名字，兼容老版本 Kod
+        """
+        timeout = self.timeout if timeout is None else timeout
+        save_dir = Path(save_to).expanduser().resolve()
+        save_dir.mkdir(parents=True, exist_ok=True)
+
+        # 1) 列目录
+        list_url = f"{self.base}/index.php?explorer/list/path"
+        token = getattr(self, "token", None)
+        payload = {
+            "path": folder_path,
+        }
+        if token:
+            # 一次性全带，服务端认哪个用哪个
+            payload["CSRF_TOKEN"] = token
+            payload["csrfToken"] = token
+            payload["accessToken"] = token
+            payload["token"] = token
+
+        resp = self.session.post(list_url, data=payload, timeout=20)
+        resp.raise_for_status()
+        data = resp.json()
+        data: dict
+
+        if not data.get("code"):
+            # 把服务端说的话打出来，方便你看它到底要哪个字段
+            raise RuntimeError(f"list folder failed: {data}")
+
+        # 老 Kod 常见结构：data -> data -> fileList
+        file_list = data["data"].get("fileList", [])
+        downloaded: List[Path] = []
+
+        for item in file_list:
+            item: dict
+            # 跳过目录
+            if item.get("type") == "folder" or item.get("isFolder") == 1:
+                continue
+
+            remote_path = item.get("path")
+            if not remote_path:
+                continue
+
+            filename = item.get("name") or "unnamed"
+            local_path = save_dir / filename
+            if local_path.exists() and not overwrite:
+                downloaded.append(local_path)
+                continue
+
+            # 2) 下载文件
+            safe_path = urllib.parse.quote(remote_path, safe="")
+            # 拼一个最全的版本
+            dl_url = (
+                f"{self.base}/index.php?explorer/index/fileOut" f"&path={safe_path}" f"&download=1"
+            )
+            if token:
+                dl_url += (
+                    f"&CSRF_TOKEN={token}"
+                    f"&csrfToken={token}"
+                    f"&accessToken={token}"
+                    f"&token={token}"
+                )
+
+            with self.session.get(dl_url, stream=True, timeout=timeout) as r:
+                r.raise_for_status()
+                with open(local_path, "wb") as f:
+                    for chunk in r.iter_content(chunk_size=chunk_size):
+                        if chunk:
+                            f.write(chunk)
+
+            downloaded.append(local_path)
+
+        return downloaded
