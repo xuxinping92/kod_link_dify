@@ -16,7 +16,7 @@ dify = DifyClient(
     api_key=api_key,
 )
 
-kod_folder_path = "{source:3546}/"
+kod_folder_path = "{source:486}/"
 dataset_id = "f6f44282-a4da-409c-8cfe-05edba8e351a"
 folder = r"C:\Users\22959\Desktop\test_files"
 

@@ -164,10 +164,11 @@ def sync_kod_folder_to_dify(
 
     # 2) 从可道云下载整个文件夹的内容到本地
     #    这里使用你刚刚写好的 download_folder_files
-    downloaded_files = kod_client.download_folder_files(
+    downloaded_files = kod_client.download_folder_files_recursive(
         folder_path=kod_folder_path,
         save_to=workdir,
         overwrite=overwrite_local,
+        keep_structure=False,
     )
 
     # 3) 上传整个目录到 Dify

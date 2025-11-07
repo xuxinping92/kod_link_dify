@@ -1,7 +1,7 @@
 import os
 import urllib.parse
 from pathlib import Path
-from typing import List, Optional, Union
+from typing import List, Optional, Tuple, Union
 from urllib.parse import unquote, urlencode
 
 import requests
@@ -312,4 +312,179 @@ class KodClient:
 
             downloaded.append(local_path)
 
+        return downloaded
+
+    def _token_params(self) -> dict:
+        """
+        构造兼容各种老版本 Kod 的 token 参数，一次性全带。
+        """
+        token = getattr(self, "token", None)
+        if not token:
+            return {}
+        return {
+            "CSRF_TOKEN": token,
+            "csrfToken": token,
+            "accessToken": token,
+            "token": token,
+        }
+
+    def _list_folder_items(
+        self,
+        folder_path: str,
+        timeout: Optional[int] = None,
+    ) -> Tuple[List[dict], List[dict]]:
+        """
+        列出目录下的文件和子文件夹。
+
+        返回:
+        - files: 仅文件项列表
+        - folders: 仅文件夹项列表
+        """
+        timeout = self.timeout if timeout is None else timeout
+
+        list_url = f"{self.base}/index.php?explorer/list/path"
+        payload = {"path": folder_path}
+        payload.update(self._token_params())
+
+        resp = self.session.post(list_url, data=payload, timeout=timeout)
+        resp.raise_for_status()
+        data = resp.json()
+
+        if not data.get("code"):
+            raise RuntimeError(f"list folder failed: {data}")
+
+        # 老 Kod 常见结构：data -> data -> fileList / folderList
+        payload_data = data.get("data") or {}
+
+        raw_list = payload_data.get("fileList") or payload_data.get("list") or []
+        folder_list = payload_data.get("folderList")
+
+        # 如果没有单独的 folderList，就从 raw_list 里拆
+        if folder_list is None:
+            folders = [
+                item
+                for item in raw_list
+                if item.get("type") == "folder" or item.get("isFolder") == 1
+            ]
+        else:
+            folders = folder_list
+
+        files = [
+            item
+            for item in raw_list
+            if not (item.get("type") == "folder" or item.get("isFolder") == 1)
+        ]
+
+        return files, folders
+
+    def download_folder_files_recursive(
+        self,
+        folder_path: str,
+        save_to: Union[str, Path],
+        overwrite: bool = False,
+        keep_structure: bool = True,
+        chunk_size: int = 1024 * 1024,
+        timeout: Optional[int] = None,
+    ) -> List[Path]:
+        """
+        递归下载 folder_path 下所有文件。
+
+        参数
+        ----
+        folder_path :
+            远端目录（如 "{source:123}/project" 或 "个人空间/项目A"）
+        save_to :
+            本地保存根目录。
+        overwrite :
+            True 时已存在文件将被覆盖。
+        keep_structure :
+            - True : 保留远端目录结构（默认）
+            - False: 所有文件下载到同一个文件夹（扁平化）
+        chunk_size :
+            下载块大小。
+        timeout :
+            超时时间（秒），默认为 self.timeout。
+
+        行为示例
+        -------
+        远端:
+            /A/file1.docx
+            /A/sub/file2.pdf
+
+        keep_structure=True 时本地:
+            save_to/file1.docx
+            save_to/sub/file2.pdf
+
+        keep_structure=False 时本地:
+            save_to/file1.docx
+            save_to/file2.pdf
+            （如重名则自动加 (1), (2) 后缀，除非 overwrite=True）
+        """
+        timeout = self.timeout if timeout is None else timeout
+        root_dir = Path(save_to).expanduser().resolve()
+        root_dir.mkdir(parents=True, exist_ok=True)
+
+        downloaded: List[Path] = []
+
+        def _make_flat_path(filename: str) -> Path:
+            """
+            在 root_dir 下生成一个不冲突的文件名（当 overwrite=False 时）。
+            """
+            candidate = root_dir / filename
+            if overwrite or not candidate.exists():
+                return candidate
+
+            stem, suffix = os.path.splitext(filename)
+            idx = 1
+            while True:
+                alt = root_dir / f"{stem}({idx}){suffix}"
+                if not alt.exists():
+                    return alt
+                idx += 1
+
+        def _walk(remote_folder: str, current_local_folder: Path):
+            files, folders = self._list_folder_items(remote_folder, timeout=timeout)
+
+            # 1) 下载当前目录下的文件
+            for item in files:
+                remote_path = item.get("path")
+                if not remote_path:
+                    continue
+
+                filename = item.get("name") or Path(remote_path).name or "unnamed"
+
+                if keep_structure:
+                    local_path = current_local_folder / filename
+                else:
+                    local_path = _make_flat_path(filename)
+
+                local_path.parent.mkdir(parents=True, exist_ok=True)
+
+                if local_path.exists() and not overwrite:
+                    downloaded.append(local_path)
+                    continue
+
+                self._download_one(remote_path, local_path, chunk_size, timeout)
+                downloaded.append(local_path)
+
+            # 2) 递归处理子文件夹
+            for folder in folders:
+                sub_remote = folder.get("path") or folder.get("pathDisplay")
+                if not sub_remote:
+                    continue
+
+                sub_name = folder.get("name") or Path(sub_remote).name or "folder"
+
+                if keep_structure:
+                    sub_local = current_local_folder / sub_name
+                else:
+                    # 扁平化模式下仍然需要递归遍历远端目录，但本地都写 root_dir
+                    sub_local = current_local_folder  # 实际不会用到结构
+
+                if keep_structure:
+                    sub_local.mkdir(parents=True, exist_ok=True)
+
+                _walk(sub_remote, sub_local if keep_structure else current_local_folder)
+
+        _walk(folder_path, root_dir)
         return downloaded
