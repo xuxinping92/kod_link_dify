@@ -8,6 +8,109 @@ import requests
 
 from .config import base_url, password, request_timeout, username
 
+ALLOWED_EXTS = {
+    # 文本类
+    ".txt",
+    ".md",
+    ".json",
+    ".csv",
+    ".xml",
+    ".html",
+    ".htm",
+    ".py",
+    ".log",
+    # 文档类
+    ".pdf",
+    ".doc",
+    ".docx",
+    ".ppt",
+    ".pptx",
+    ".xls",
+    ".xlsx",
+}
+
+# 自动过滤的非文本类型
+BLOCK_EXTS = {
+    # 图片
+    ".jpg",
+    ".jpeg",
+    ".png",
+    ".gif",
+    ".bmp",
+    ".webp",
+    ".tiff",
+    ".svg",
+    # 视频
+    ".mp4",
+    ".avi",
+    ".mov",
+    ".wmv",
+    ".flv",
+    ".mkv",
+    ".webm",
+    # 音频
+    ".mp3",
+    ".wav",
+    ".aac",
+    ".flac",
+    ".ogg",
+    ".m4a",
+    # 压缩/二进制
+    ".zip",
+    ".rar",
+    ".7z",
+    ".gz",
+    ".tar",
+    ".exe",
+    ".bin",
+    ".dll",
+}
+
+
+def _is_text_or_document_file(filename: str, content_type: str) -> bool:
+    """判断文件是否为文本或允许的文档类型"""
+    ext = Path(filename).suffix.lower()
+
+    # 1) 扩展名白名单
+    if ext in ALLOWED_EXTS:
+        return True
+
+    # 2) 扩展名黑名单
+    if ext in BLOCK_EXTS:
+        return False
+
+    # 3) MIME 类型判断（兜底）
+    if not content_type:
+        return True  # 没法判断 → 默认允许
+
+    ct = content_type.lower()
+
+    # 允许的文档类型
+    if ct.startswith("text/"):
+        return True
+    if ct in (
+        "application/pdf",
+        "application/msword",
+        "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+        "application/vnd.ms-powerpoint",
+        "application/vnd.openxmlformats-officedocument.presentationml.presentation",
+        "application/vnd.ms-excel",
+        "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        "application/json",
+    ):
+        return True
+
+    # 图片/视频/音频自动过滤
+    if (
+        ct.startswith("image/")
+        or ct.startswith("video/")
+        or ct.startswith("audio/")
+        or ct == "application/octet-stream"
+    ):
+        return False
+
+    return True
+
 
 class KodClient:
     def __init__(
@@ -42,8 +145,8 @@ class KodClient:
 
     def get_options(
         self,
-        token: str | None = None,
-        timeout: int = None,
+        token: Optional[str] = None,
+        timeout: Optional[int] = None,
     ) -> dict:
         """
         获取系统配置信息
@@ -116,78 +219,6 @@ class KodClient:
             return j  # 兜底返回原对象，避免信息丢失
         else:
             raise RuntimeError(f"获取文档权限列表失败：{j}")
-
-    def _download_one(
-        self,
-        one_path: str,
-        save_to: Optional[Path],
-        overwrite: bool = False,
-        chunk_size: int = 1024 * 1024,
-        timeout: Optional[int] = None,
-        extra_params: Optional[dict] = None,
-    ) -> Path:
-        """下载单个文件"""
-        query = {"path": one_path, "download": 1}
-        if extra_params:
-            query.update(extra_params)
-
-        # 拼接 Kod 动作式 URL
-        query_string = "?" + "&".join(
-            ["explorer/index/fileOut"] + [urlencode({k: v}) for k, v in query.items()]
-        )
-        full_url = f"{self.base}/index.php{query_string}"
-        _timeout = self.timeout if timeout is None else timeout
-
-        # 发起流式请求
-        resp = self.session.get(full_url, stream=True, timeout=_timeout)
-        resp.raise_for_status()
-
-        # 解析文件名
-        filename = None
-        cd = resp.headers.get("Content-Disposition") or resp.headers.get("content-disposition")
-        if cd:
-            parts = [p.strip() for p in cd.split(";")]
-            for p in parts:
-                if p.lower().startswith("filename*="):
-                    try:
-                        enc_and_name = p.split("=", 1)[1]
-                        _, _, enc_name = enc_and_name.partition("''")
-                        filename = unquote(enc_name.strip().strip('"'))
-                        break
-                    except Exception:
-                        pass
-                if p.lower().startswith("filename=") and filename is None:
-                    val = p.split("=", 1)[1].strip().strip('"')
-                    filename = unquote(val)
-
-        if not filename:
-            guess = one_path.rstrip("/").split("/")[-1]
-            if guess.startswith("{") and guess.endswith("}"):
-                guess = "download.bin"
-            filename = guess or "download.bin"
-
-        # 确定保存路径
-        if save_to is None:
-            target = Path.cwd() / filename
-        else:
-            if save_to.exists() and save_to.is_dir():
-                target = save_to / filename
-            elif save_to.suffix:
-                target = save_to
-            else:
-                save_to.mkdir(parents=True, exist_ok=True)
-                target = save_to / filename
-
-        if target.exists() and not overwrite:
-            raise FileExistsError(f"Target file exists: {target}")
-
-        # 写入文件
-        with open(target, "wb") as f:
-            for chunk in resp.iter_content(chunk_size=chunk_size):
-                if chunk:
-                    f.write(chunk)
-
-        return target
 
     def download_file(
         self,
@@ -314,69 +345,6 @@ class KodClient:
 
         return downloaded
 
-    def _token_params(self) -> dict:
-        """
-        构造兼容各种老版本 Kod 的 token 参数，一次性全带。
-        """
-        token = getattr(self, "token", None)
-        if not token:
-            return {}
-        return {
-            "CSRF_TOKEN": token,
-            "csrfToken": token,
-            "accessToken": token,
-            "token": token,
-        }
-
-    def _list_folder_items(
-        self,
-        folder_path: str,
-        timeout: Optional[int] = None,
-    ) -> Tuple[List[dict], List[dict]]:
-        """
-        列出目录下的文件和子文件夹。
-
-        返回:
-        - files: 仅文件项列表
-        - folders: 仅文件夹项列表
-        """
-        timeout = self.timeout if timeout is None else timeout
-
-        list_url = f"{self.base}/index.php?explorer/list/path"
-        payload = {"path": folder_path}
-        payload.update(self._token_params())
-
-        resp = self.session.post(list_url, data=payload, timeout=timeout)
-        resp.raise_for_status()
-        data = resp.json()
-
-        if not data.get("code"):
-            raise RuntimeError(f"list folder failed: {data}")
-
-        # 老 Kod 常见结构：data -> data -> fileList / folderList
-        payload_data = data.get("data") or {}
-
-        raw_list = payload_data.get("fileList") or payload_data.get("list") or []
-        folder_list = payload_data.get("folderList")
-
-        # 如果没有单独的 folderList，就从 raw_list 里拆
-        if folder_list is None:
-            folders = [
-                item
-                for item in raw_list
-                if item.get("type") == "folder" or item.get("isFolder") == 1
-            ]
-        else:
-            folders = folder_list
-
-        files = [
-            item
-            for item in raw_list
-            if not (item.get("type") == "folder" or item.get("isFolder") == 1)
-        ]
-
-        return files, folders
-
     def download_folder_files_recursive(
         self,
         folder_path: str,
@@ -488,3 +456,147 @@ class KodClient:
 
         _walk(folder_path, root_dir)
         return downloaded
+
+    ###################################
+    ## 内部工具函数
+    ###################################
+
+    def _token_params(self) -> dict:
+        """
+        构造兼容各种老版本 Kod 的 token 参数，一次性全带。
+        """
+        token = getattr(self, "token", None)
+        if not token:
+            return {}
+        return {
+            "CSRF_TOKEN": token,
+            "csrfToken": token,
+            "accessToken": token,
+            "token": token,
+        }
+
+    def _list_folder_items(
+        self,
+        folder_path: str,
+        timeout: Optional[int] = None,
+    ) -> Tuple[List[dict], List[dict]]:
+        """
+        列出目录下的文件和子文件夹。
+
+        返回:
+        - files: 仅文件项列表
+        - folders: 仅文件夹项列表
+        """
+        timeout = self.timeout if timeout is None else timeout
+
+        list_url = f"{self.base}/index.php?explorer/list/path"
+        payload = {"path": folder_path}
+        payload.update(self._token_params())
+
+        resp = self.session.post(list_url, data=payload, timeout=timeout)
+        resp.raise_for_status()
+        data = resp.json()
+
+        if not data.get("code"):
+            raise RuntimeError(f"list folder failed: {data}")
+
+        # 老 Kod 常见结构：data -> data -> fileList / folderList
+        payload_data = data.get("data") or {}
+
+        raw_list = payload_data.get("fileList") or payload_data.get("list") or []
+        folder_list = payload_data.get("folderList")
+
+        # 如果没有单独的 folderList，就从 raw_list 里拆
+        if folder_list is None:
+            folders = [
+                item
+                for item in raw_list
+                if item.get("type") == "folder" or item.get("isFolder") == 1
+            ]
+        else:
+            folders = folder_list
+
+        files = [
+            item
+            for item in raw_list
+            if not (item.get("type") == "folder" or item.get("isFolder") == 1)
+        ]
+
+        return files, folders
+
+    def _download_one(
+        self,
+        one_path: str,
+        save_to: Optional[Path],
+        overwrite: bool = False,
+        chunk_size: int = 1024 * 1024,
+        timeout: Optional[int] = None,
+        extra_params: Optional[dict] = None,
+    ) -> Optional[Path]:
+        """下载单个文件（自动过滤非文本文件）"""
+        query = {"path": one_path, "download": 1}
+        if extra_params:
+            query.update(extra_params)
+
+        # 拼接 Kod 动作式 URL
+        query_string = "?" + "&".join(
+            ["explorer/index/fileOut"] + [urlencode({k: v}) for k, v in query.items()]
+        )
+        full_url = f"{self.base}/index.php{query_string}"
+        _timeout = self.timeout if timeout is None else timeout
+
+        resp = self.session.get(full_url, stream=True, timeout=_timeout)
+        resp.raise_for_status()
+
+        # 解析文件名
+        filename = None
+        cd = resp.headers.get("Content-Disposition") or resp.headers.get("content-disposition")
+        if cd:
+            parts = [p.strip() for p in cd.split(";")]
+            for p in parts:
+                if p.lower().startswith("filename*="):
+                    try:
+                        enc_and_name = p.split("=", 1)[1]
+                        _, _, enc_name = enc_and_name.partition("''")
+                        filename = unquote(enc_name.strip().strip('"'))
+                        break
+                    except Exception:
+                        pass
+                if p.lower().startswith("filename=") and filename is None:
+                    val = p.split("=", 1)[1].strip().strip('"')
+                    filename = unquote(val)
+
+        if not filename:
+            guess = one_path.rstrip("/").split("/")[-1]
+            if guess.startswith("{") and guess.endswith("}"):
+                guess = "download.bin"
+            filename = guess or "download.bin"
+
+        # ---- ⭐ 新增过滤逻辑：根据扩展名与 Content-Type 判断文件类型 ----
+        content_type = resp.headers.get("Content-Type", "")
+        if not _is_text_or_document_file(filename, content_type):
+            print(f"[跳过非文本] {filename} ({content_type})")
+            return None
+
+        # -------------------- 文件保存流程 --------------------
+        if save_to is None:
+            target = Path.cwd() / filename
+        else:
+            if save_to.exists() and save_to.is_dir():
+                target = save_to / filename
+            elif save_to.suffix:
+                target = save_to
+            else:
+                save_to.mkdir(parents=True, exist_ok=True)
+                target = save_to / filename
+
+        if target.exists() and not overwrite:
+            raise FileExistsError(f"Target file exists: {target}")
+
+        # 写入文件
+        with open(target, "wb") as f:
+            for chunk in resp.iter_content(chunk_size=chunk_size):
+                if chunk:
+                    f.write(chunk)
+
+        return target
